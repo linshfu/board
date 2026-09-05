@@ -1,0 +1,8 @@
+# 真實的進度板內容不進版控——那是各自機器上的工作紀錄
+boards/*.json
+boards/archive/
+!boards/example.json
+
+node_modules/
+*.log
+.DS_Store

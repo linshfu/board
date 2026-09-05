@@ -1,0 +1,1174 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>封包進度板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  /* 固定暗黑主題——這是本機工具自己的視覺身分，不跟系統設定切換 */
+  :root {
+    --ink:#E4EBEE; --ink-soft:#A2AFB6; --ink-faint:#838FA0;
+    --paper:#0E1417; --surface:#151D21; --sunken:#0A0F12;
+    --line:#263036; --line-strong:#37444B;
+    --t-infra:#8D9BA5; --t-api:#5AA3DC; --t-bug:#E07C56; --t-test:#59B383;
+    --t-research:#45B5B1; --t-data:#E0AC4C; --t-ui:#9B8AE0;
+    --accent:#5AA3DC; --ok:#59B383; --warn:#E0AC4C; --danger:#E07C56;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.6);
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+    line-height:1.7; padding:28px 20px 60px;
+  }
+  .wrap { max-width:1440px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
+  /* 目標列表在左、內容居中、圖解在右；minmax(0,1fr) 讓中欄不會被長內容撐爆 */
+  .layout {
+    display:grid; grid-template-columns:270px minmax(0,1fr) 196px; gap:16px; align-items:start;
+    transition:grid-template-columns .28s ease;
+  }
+  /* 圖解收起來時只留一條把手，寬度還給中間 */
+  .layout.rail-off { grid-template-columns:270px minmax(0,1fr) 34px; }
+  .sidebar { display:flex; flex-direction:column; gap:10px; position:sticky; top:20px; }
+
+  /* ---------- 右側圖解欄 ---------- */
+  .rail {
+    background:var(--surface); border:1px solid var(--line); border-radius:12px;
+    box-shadow:var(--shadow); overflow:hidden; position:sticky; top:20px;
+    display:flex; flex-direction:column;
+  }
+  .rail-head {
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:10px 12px; background:transparent; border:none; border-bottom:1px solid var(--line);
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--ink-soft);
+    cursor:pointer; transition:color .15s ease;
+  }
+  .rail-head:hover { color:var(--accent); }
+  .rail-head i { font-style:normal; transition:transform .22s ease; }
+  .rail-body { padding:12px; display:flex; flex-direction:column; gap:12px; }
+  .layout.rail-off .rail-body,
+  .layout.rail-off .rail-title { display:none; }
+  .layout.rail-off .rail-head { justify-content:center; padding:11px 0; border-bottom:none; }
+  .layout.rail-off .rail-head i { transform:rotate(-90deg); }
+  .mono { font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+  h1 { margin:0; text-wrap:balance; }
+  /* 瀏覽器對 <button> 的 UA 樣式會設定 color:buttontext，
+     切斷從 body 繼承下來的 --ink，沒有明確設色的按鈕文字會變成系統預設黑字 */
+  button { font-family:inherit; color:inherit; }
+  *:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* ---------- topbar ---------- */
+  .topbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .topbar h1 { font-family:"IBM Plex Mono","Noto Sans TC",monospace; font-size:24px; font-weight:700; }
+  .conn { display:flex; align-items:center; gap:7px; font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--ink-faint); }
+  .conn .dot { width:7px; height:7px; border-radius:999px; background:var(--ink-faint); transition:background .2s; }
+  .conn.on .dot { background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); animation:blink 2.4s ease-in-out infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .spacer { flex:1; }
+  button.iconbtn {
+    display:inline-flex; align-items:center; gap:6px;
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:500;
+    background:var(--surface); color:var(--ink-soft); border:1px solid var(--line-strong);
+    padding:7px 13px; border-radius:7px; cursor:pointer; transition:border-color .15s, color .15s;
+  }
+  button.iconbtn:hover { border-color:var(--accent); color:var(--accent); }
+
+  /* ---------- cards row ---------- */
+  .cards { display:flex; flex-direction:column; gap:8px; }
+  .card {
+    background:var(--surface); border:1px solid var(--line); border-radius:10px;
+    padding:11px 13px; box-shadow:var(--shadow); cursor:pointer; text-align:left;
+    display:flex; flex-direction:column; gap:7px; width:100%; min-width:0;
+    transition:border-color .15s ease, transform .15s ease;
+  }
+  .card:hover { border-color:var(--line-strong); transform:translateX(2px); }
+  .card.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent), var(--shadow); }
+  .card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+  .card-name { font-size:13px; font-weight:500; line-height:1.4; }
+  .card-pct { font-family:"IBM Plex Mono",monospace; font-size:17px; font-weight:700; color:var(--accent); line-height:1; flex-shrink:0; }
+  .card-pct em { font-size:10.5px; font-style:normal; color:var(--ink-faint); }
+  .card-bar { height:3px; background:var(--sunken); border-radius:2px; display:flex; overflow:hidden; }
+  .card-bar i { height:100%; background:var(--ok); transition:flex-basis .5s ease; }
+  .card-bar i.a { background:var(--warn); }
+  .card-meta { font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--ink-faint); display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+  /* 左側縮圖跟主區的進度條用同一套狀態配色——它們扮演同樣的角色（一眼看進度），
+     6px 大小分不出外框/填色的差別，用顏色講狀態最清楚。類型顏色留給主區的方塊 */
+  .mini span { width:6px; height:6px; border-radius:1.5px; background:var(--line-strong); display:block; }
+  .mini span[data-status="done"] { background:var(--ok); }
+  .mini span[data-status="active"],.mini span[data-status="half"] { background:var(--warn); }
+  .mini span[data-status="blocked"] { background:var(--danger); }
+  .mini span[data-status="skipped"] { background:var(--line); }
+
+  .empty { background:var(--surface); border:1px dashed var(--line-strong); border-radius:11px; padding:36px 20px; text-align:center; color:var(--ink-soft); font-size:14px; }
+
+  /* ---------- 對話狀態（一個目標 ≒ 一個 AI 對話） ---------- */
+  .ses {
+    display:inline-flex; align-items:center; gap:6px; flex-shrink:0;
+    font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--ink-faint);
+  }
+  .ses i { width:7px; height:7px; border-radius:999px; background:var(--line-strong); display:block; flex-shrink:0; }
+  .ses[data-s="live"] { color:var(--ok); }
+  .ses[data-s="live"] i {
+    background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent);
+    animation:blink 2.4s ease-in-out infinite;
+  }
+  .ses[data-s="idle"] { color:var(--warn); }
+  .ses[data-s="idle"] i { background:var(--warn); }
+  .ses[data-s="ended"] { color:var(--ink-faint); }
+  button.ses {
+    font-size:11px; background:transparent; border:1px solid var(--line);
+    border-radius:999px; padding:4px 11px; cursor:pointer; transition:border-color .15s;
+  }
+  button.ses:hover { border-color:var(--line-strong); }
+
+  /* ---------- detail ---------- */
+  .board { background:var(--surface); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); overflow:hidden; }
+  .board-head { padding:15px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .board-title { font-family:"IBM Plex Mono","Noto Sans TC",monospace; font-size:14.5px; font-weight:600; }
+  .board-stats { margin-left:auto; display:flex; align-items:center; gap:14px; font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--ink-soft); }
+  .board-pct { font-family:"IBM Plex Mono",monospace; font-size:22px; font-weight:700; color:var(--accent); letter-spacing:-.02em; line-height:1; }
+  .board-pct em { font-size:12.5px; font-style:normal; color:var(--ink-faint); }
+  /* 兩條疊在一起：上面細的看整體完成度（完成的聚在左邊），
+     下面一格一個封包、順序跟波次一致，所以任何波次／方塊都能對到自己那一段 */
+  .tracks { display:flex; flex-direction:column; gap:2px; background:var(--sunken); padding:2px 0 0; }
+  .track-sum { height:3px; display:flex; overflow:hidden; }
+  .track-sum i { height:100%; display:block; transition:flex-basis .5s ease; }
+  .track-sum i.d { background:var(--ok); }
+  .track-sum i.a { background:var(--warn); }
+  .track { height:7px; display:flex; }
+  .track i {
+    flex:1 1 0; min-width:2px; height:100%; display:block; background:var(--line-strong);
+    transition:background .3s ease, opacity .18s ease, transform .18s ease;
+  }
+  .track i[data-status="done"] { background:var(--ok); }
+  .track i[data-status="active"], .track i[data-status="half"] { background:var(--warn); }
+  .track i[data-status="blocked"] { background:var(--danger); }
+  .track i[data-status="skipped"] { background:var(--line); }
+  /* 滑到某個波次／方塊時，其他段落先暗下去，對應的那段跳出來 */
+  .track.dim i { opacity:.22; }
+  .track.dim i.hl { opacity:1; transform:scaleY(1.7); }
+
+  .groups { padding:4px 18px 16px; display:flex; flex-direction:column; min-height:40px; }
+  .grp { padding:10px 0; border-bottom:1px dashed var(--line); }
+  .grp:last-child { border-bottom:none; }
+  /* 整列可點，點了展開下面的細節 */
+  .grp-head {
+    display:grid; grid-template-columns:170px minmax(0,1fr); gap:14px; align-items:center;
+    cursor:pointer; border-radius:7px; padding:4px 7px; margin:-4px -7px;
+    transition:background .15s ease;
+  }
+  .grp-head:hover { background:color-mix(in srgb, var(--line) 45%, transparent); }
+  .grp-label { font-size:12px; color:var(--ink-soft); display:flex; flex-direction:column; gap:1px; }
+  .grp-label b { color:var(--ink); font-weight:500; font-size:12.5px; }
+  .grp-label span { font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--ink-faint); }
+  /* 展開指示三角，用偽元素免得動到 DOM 結構 */
+  .grp-label b::before {
+    content:"▸"; display:inline-block; margin-right:5px; color:var(--ink-faint);
+    transition:transform .2s ease, color .15s ease;
+  }
+  .grp.open .grp-label b::before { transform:rotate(90deg); color:var(--accent); }
+  .grp-head:hover .grp-label b::before { color:var(--accent); }
+  .pks { display:flex; flex-wrap:wrap; gap:5px; align-items:flex-start; }
+  .grp.open .pks { display:none; }
+
+  /* 展開後標籤自己佔滿一行，細節列從最左邊排到底，不留左邊那塊空白 */
+  .grp.open .grp-head { grid-template-columns:1fr; }
+  .grp-rows { display:none; flex-direction:column; gap:4px; margin:11px 0 2px; padding-left:11px; }
+  .grp.open .grp-rows { display:flex; }
+  /* 同一組（frag）在展開後，橫的底線改成左邊一條直線把它們串起來，
+     線本身還是這組的進度：完成染綠、進行中染黃 */
+  .frag-block { position:relative; display:flex; flex-direction:column; gap:4px; }
+  .frag-line {
+    position:absolute; left:-11px; top:3px; bottom:3px; width:2px;
+    border-radius:2px; background:var(--line-strong);
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  .frag-line i { width:100%; display:block; transition:flex-basis .45s ease; }
+  .frag-line i.d { background:var(--ok); }
+  .frag-line i.a { background:var(--warn); }
+  .frag-block.on .frag-line { box-shadow:0 0 0 1px color-mix(in srgb, var(--warn) 45%, transparent); }
+  .prow {
+    display:flex; align-items:flex-start; gap:11px;
+    padding:6px 9px; border-radius:7px; background:var(--sunken);
+  }
+  .prow .pk { flex-shrink:0; margin-top:2px; }
+  /* 細節等方塊滑到位才淡進來（backwards：delay 期間先套用 from 的透明） */
+  .pinfo { display:flex; flex-direction:column; gap:1px; min-width:0; animation:pinfo-in .3s ease .4s backwards; }
+  .pinfo-title { font-size:12.5px; color:var(--ink); line-height:1.45; }
+  .pinfo-meta { font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--ink-faint); }
+  .pinfo-detail { font-size:11.5px; color:var(--ink-soft); line-height:1.5; margin-top:2px; }
+  @keyframes pinfo-in { from { opacity:0; transform:translateX(-7px); } }
+  /* 同一件事拆成多片：用一條底線把它們框成一組，底線自己就是這組的進度 */
+  .frag { display:flex; flex-direction:column; align-items:stretch; }
+  .frag-pks { display:flex; gap:5px; }
+  .frag-bar {
+    height:2px; margin:5px 1px 0; border-radius:2px;
+    background:var(--line-strong); display:flex; overflow:hidden;
+  }
+  .frag-bar i { height:100%; display:block; transition:flex-basis .45s ease; }
+  .frag-bar i.d { background:var(--ok); }
+  .frag-bar i.a { background:var(--warn); }
+  /* 這一組裡有東西正在做 → 底線亮起來，讓進行中的那一串最先被看到 */
+  .frag.on .frag-bar { box-shadow:0 0 0 1px color-mix(in srgb, var(--warn) 45%, transparent); }
+  .frag-tag {
+    font-family:"IBM Plex Mono",monospace; font-size:9px; line-height:1.5;
+    color:var(--ink-faint); margin-top:1px; letter-spacing:.02em;
+  }
+  .frag.on .frag-tag { color:var(--warn); }
+
+  .pk {
+    display:block; width:17px; height:17px; border-radius:3px; border:1.5px solid var(--t);
+    background:transparent;
+  }
+  .pk[data-status="done"] { background:var(--t); }
+  /* 進行中／做過半＝心跳：兩拍一組（lub-dub）再停一下，比等速閃爍更像「還在跳」。
+     做過半跳得慢一點，跟正在動的那批區隔開 */
+  .pk[data-status="half"] {
+    background:linear-gradient(135deg, var(--t) 0 50%, transparent 50% 100%);
+    animation:beat 2.4s ease-in-out infinite;
+  }
+  .pk[data-status="active"] {
+    background:color-mix(in srgb, var(--t) 40%, transparent);
+    animation:beat 1.5s ease-in-out infinite;
+  }
+  @keyframes beat {
+    0%       { box-shadow:0 0 0 0 color-mix(in srgb,var(--t) 50%,transparent); filter:brightness(1); }
+    12%      { box-shadow:0 0 0 3px color-mix(in srgb,var(--t) 26%,transparent); filter:brightness(1.45); }
+    24%      { box-shadow:0 0 0 0 color-mix(in srgb,var(--t) 0%,transparent); filter:brightness(1); }
+    36%      { box-shadow:0 0 0 2px color-mix(in srgb,var(--t) 20%,transparent); filter:brightness(1.3); }
+    48%,100% { box-shadow:0 0 0 0 color-mix(in srgb,var(--t) 0%,transparent); filter:brightness(1); }
+  }
+  .pk[data-status="skipped"] { border-style:dotted; opacity:.7; }
+  .pk[data-status="blocked"] { background:repeating-linear-gradient(45deg, var(--t) 0 2px, transparent 2px 5px); }
+  .pk[data-t="infra"]{--t:var(--t-infra)} .pk[data-t="api"]{--t:var(--t-api)}
+  .pk[data-t="bug"]{--t:var(--t-bug)} .pk[data-t="test"]{--t:var(--t-test)}
+  .pk[data-t="research"]{--t:var(--t-research)} .pk[data-t="data"]{--t:var(--t-data)}
+  .pk[data-t="ui"]{--t:var(--t-ui)}
+  /* 出場與狀態變化的一次性動畫改用 Web Animations API（見 upsertPacket）：
+     CSS 的 animation 屬性只有一個，留給心跳，否則 enter/pulse 會把心跳蓋掉 */
+
+  .board-foot { border-top:1px solid var(--line); background:var(--sunken); padding:12px 18px; display:flex; gap:20px; flex-wrap:wrap; }
+  .lg-group { display:flex; flex-direction:column; gap:5px; }
+  .lg-title {
+    font-family:"IBM Plex Mono",monospace; font-size:9.5px; color:var(--ink-faint);
+    letter-spacing:.08em; text-transform:uppercase;
+  }
+  .lg-items { display:flex; flex-wrap:wrap; gap:8px 13px; align-content:flex-start; }
+  .lg { font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-soft); display:inline-flex; align-items:center; gap:5px; }
+  .lg i { width:9px; height:9px; border-radius:2px; display:block; }
+  /* 狀態圖解直接重用 .pk 的狀態樣式，只縮小尺寸、拔掉互動，
+     這樣以後改方塊外觀，圖解會自動跟著一致 */
+  .pk.demo {
+    width:13px; height:13px; border-width:1.25px; cursor:default; pointer-events:none;
+    --t:var(--ink-soft); flex-shrink:0;
+  }
+  .hint { font-size:11px; color:var(--ink-faint); flex-basis:100%; }
+
+  .log { flex:1 1 260px; min-width:240px; max-height:120px; overflow-y:auto; display:flex; flex-direction:column-reverse; gap:3px; }
+  .log-line { font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-soft); display:flex; gap:8px; animation:slidein .25s ease backwards; }
+  .log-line .ts { color:var(--ink-faint); flex-shrink:0; }
+  .log-empty { font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-faint); }
+  @keyframes slidein { from { opacity:0; transform:translateX(-6px) } }
+
+  .board-actions { display:flex; justify-content:flex-end; padding:10px 18px; border-top:1px solid var(--line); }
+  button.ghost {
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--ink-faint);
+    background:transparent; border:1px solid var(--line); padding:6px 12px;
+    border-radius:6px; cursor:pointer;
+  }
+  button.ghost:hover { border-color:var(--danger); color:var(--danger); }
+
+  /* ---------- modal ---------- */
+  .modal-backdrop {
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,.55);
+    align-items:center; justify-content:center; z-index:100; padding:20px;
+  }
+  .modal-backdrop.open { display:flex; }
+  .modal {
+    background:var(--surface); border:1px solid var(--line-strong); border-radius:12px;
+    padding:22px 24px; box-shadow:var(--shadow); width:100%; max-width:420px;
+    display:flex; flex-direction:column; gap:13px;
+  }
+  .modal h2 { font-size:15px; font-weight:600; margin:0; }
+  .field { display:flex; flex-direction:column; gap:5px; }
+  .field label { font-size:11.5px; color:var(--ink-faint); font-family:"IBM Plex Mono",monospace; }
+  .field input, .field select {
+    font-family:"IBM Plex Mono",monospace; font-size:13px;
+    background:var(--sunken); border:1px solid var(--line); border-radius:6px;
+    padding:9px 11px; color:var(--ink); width:100%;
+  }
+  .modal-row { display:flex; gap:10px; }
+  .modal-row .field { flex:1; }
+  .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
+  button.pri {
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:500;
+    background:var(--accent); color:#0E1417; border:none; padding:9px 16px;
+    border-radius:6px; cursor:pointer; transition:opacity .15s;
+  }
+  button.pri:hover { opacity:.85; }
+  button.sec {
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink-soft);
+    background:transparent; border:1px solid var(--line-strong); padding:9px 14px;
+    border-radius:6px; cursor:pointer;
+  }
+  .modal .err { color:var(--t-bug); font-size:12px; font-family:"IBM Plex Mono",monospace; min-height:1em; }
+  .modal.wide { max-width:540px; }
+
+  /* ---------- 封存清單 ---------- */
+  .arc-list { display:flex; flex-direction:column; gap:8px; max-height:52vh; overflow-y:auto; }
+  .arc-row {
+    display:flex; align-items:center; gap:10px; background:var(--sunken);
+    border:1px solid var(--line); border-radius:8px; padding:9px 11px;
+  }
+  .arc-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
+  .arc-name { font-size:12.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .arc-meta { font-family:"IBM Plex Mono",monospace; font-size:10px; color:var(--ink-faint); }
+  .arc-btns { display:flex; gap:6px; flex-shrink:0; }
+  button.tiny {
+    font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-soft);
+    background:transparent; border:1px solid var(--line-strong);
+    padding:5px 9px; border-radius:5px; cursor:pointer; transition:border-color .15s, color .15s;
+  }
+  button.tiny:hover { border-color:var(--accent); color:var(--accent); }
+  button.tiny.del:hover { border-color:var(--danger); color:var(--danger); }
+  .arc-row.armed { border-color:var(--danger); }
+  .arc-row.armed .arc-meta { color:var(--danger); }
+
+  .tally { font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--ink-faint); }
+  @media (max-width:900px){
+    .layout, .layout.rail-off { grid-template-columns:1fr; }
+    .sidebar, .rail { position:static; }
+    .cards { flex-direction:row; flex-wrap:wrap; }
+    .card { width:auto; flex:1 1 200px; max-width:280px; }
+    /* 窄螢幕收起來時不用把手，直接整條標題列 */
+    .layout.rail-off .rail-head { justify-content:space-between; padding:10px 12px; }
+    .layout.rail-off .rail-title { display:inline; }
+  }
+  @media (max-width:560px){ .grp-head{grid-template-columns:1fr;gap:6px} .grp-rows{margin-left:0} }
+  @media (prefers-reduced-motion:reduce){ *,*::before,*::after{animation:none!important;transition:none!important} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <h1>封包進度板</h1>
+    <span class="conn" id="conn"><span class="dot"></span><span id="connText">連線中…</span></span>
+    <span class="tally" id="tally"></span>
+    <span class="spacer"></span>
+    <button class="iconbtn" id="btn-open-archive">封存</button>
+  </div>
+
+  <div class="layout" id="layout">
+    <aside class="sidebar">
+      <div class="cards" id="cards"></div>
+      <div class="empty" id="empty" hidden>目前沒有進行中的目標。請 AI 建立一個，或從右上角「封存」還原舊的。</div>
+    </aside>
+    <main id="detail"></main>
+    <aside class="rail">
+      <button class="rail-head" id="rail-toggle" aria-expanded="true">
+        <span class="rail-title">圖解</span><i>▾</i>
+      </button>
+      <div class="rail-body">
+        <div class="lg-group">
+          <span class="lg-title">類型 · 看顏色</span>
+          <div class="lg-items" id="legend"></div>
+        </div>
+        <div class="lg-group">
+          <span class="lg-title">狀態 · 看外框與填色</span>
+          <div class="lg-items" id="legend-st"></div>
+        </div>
+        <div class="lg-group">
+          <span class="lg-title">進度條與左側縮圖 · 看顏色</span>
+          <div class="lg-items" id="legend-tr"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- 封存的目標 -->
+<div class="modal-backdrop" id="modal-archive">
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="ma-h">
+    <h2 id="ma-h">封存的目標</h2>
+    <div class="arc-list" id="ma-list"></div>
+    <div class="err" id="ma-err"></div>
+    <div class="modal-actions">
+      <button class="sec" data-close="modal-archive">關閉</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const TYPES = { infra:"環境建置", api:"API 契約", bug:"缺陷修復", test:"測試", research:"盤點調查", data:"資料風險", ui:"畫面功能" };
+  const STATUS_LABEL = { todo:"待辦", active:"進行中", half:"做過半", done:"完成", blocked:"卡住", skipped:"暫緩" };
+  // 進度條與左側縮圖只講狀態，不講類型——這裡是它們的配色來源
+  const TRACK_COLORS = [
+    ["--ok", "完成"],
+    ["--warn", "進行中／做過半"],
+    ["--danger", "卡住"],
+    ["--line-strong", "待辦"],
+    ["--line", "暫緩"],
+  ];
+  const expandedGroups = new Set(); // 目前展開的波次 id
+  let flipToken = 0; // 展開動畫的批次序號，連點時用來丟掉過期的收尾
+
+  let boardsSummary = [];
+  let selectedId = null;
+  let currentBoard = null;
+  const pkEls = new Map();
+  const grpRowEls = new Map();
+  const fragEls = new Map(); // key: groupId + "::" + fragName
+  const logsByBoard = new Map(); // id -> [{ts, text, type}]
+  const LOG_CAP = 8;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (isNaN(d)) return "—";
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    const hh = String(d.getHours()).padStart(2,"0"), mm = String(d.getMinutes()).padStart(2,"0");
+    return sameDay ? `今天 ${hh}:${mm}` : `${d.getMonth()+1}/${d.getDate()} ${hh}:${mm}`;
+  }
+
+  // ---------- 對話狀態 ----------
+  // 檔案裡只存 live / ended，「閒置」是這裡依最後一次心跳推出來的：
+  // 有心跳＝AI 還在動、超過門檻沒心跳＝對話大概停在那裡了、ended＝明確收工
+  const IDLE_AFTER_MS = 15 * 60 * 1000;
+
+  function fmtAgo(ms) {
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return "不到 1 分";
+    if (m < 60) return `${m} 分`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h} 小時`;
+    return `${Math.floor(h / 24)} 天`;
+  }
+
+  function sessionOf(b) {
+    const s = b.session || {};
+    // 舊的 board 沒有 session 欄位，退回用「進度最後一次變動」當心跳
+    const beatAt = s.beatAt || b.updatedAt || null;
+    const t = beatAt ? new Date(beatAt).getTime() : NaN;
+    const age = isNaN(t) ? Infinity : Math.max(0, Date.now() - t);
+    const base = { beatAt, age, label: s.label || "" };
+    if (s.state === "ended") return { ...base, state: "ended", text: "已收工" };
+    if (age > IDLE_AFTER_MS) {
+      return { ...base, state: "idle", text: age === Infinity ? "沒有紀錄" : `閒置 ${fmtAgo(age)}` };
+    }
+    return { ...base, state: "live", text: "進行中" };
+  }
+
+  // ---------- 排序：進行中/待辦留在上面，完成/暫緩沉到最下面 ----------
+  // tier 0 = 還有事要做；1 = 全部完成；2 = 全部暫緩（優先度最低，沉最下）
+  function packetTier(p) { return p.status === "skipped" ? 2 : p.status === "done" ? 1 : 0; }
+
+  function stableSortByTier(items, tierFn) {
+    return items
+      .map((item, i) => ({ item, i, tier: tierFn(item) }))
+      .sort((a, b) => a.tier - b.tier || a.i - b.i)
+      .map((x) => x.item);
+  }
+
+  // 同一個 frag 的片段在陣列裡不相鄰也要收成一組，
+  // 否則同一組會被切成兩條底線、還會爭用同一個包裝節點
+  function buildUnits(packets) {
+    const units = [];
+    const byFrag = new Map();
+    for (const p of packets) {
+      if (!p.frag) { units.push({ kind: "single", members: [p] }); continue; }
+      let u = byFrag.get(p.frag);
+      if (!u) {
+        u = { kind: "frag", frag: p.frag, members: [] };
+        byFrag.set(p.frag, u);
+        units.push(u);
+      }
+      u.members.push(p);
+    }
+    return units;
+  }
+
+  // ---------- boards（上方卡片） ----------
+
+  async function fetchBoards() {
+    const res = await fetch("/api/boards");
+    if (!res.ok) throw new Error("讀取失敗");
+    return res.json();
+  }
+
+  function renderCards() {
+    $("#tally").textContent = boardsSummary.length ? `· ${boardsSummary.length} 個目標` : "";
+    $("#empty").hidden = boardsSummary.length > 0;
+    const cardsEl = $("#cards");
+    cardsEl.innerHTML = "";
+    for (const b of boardsSummary) {
+      const btn = document.createElement("button");
+      btn.className = "card" + (b.id === selectedId ? " on" : "");
+      btn.setAttribute("aria-pressed", b.id === selectedId ? "true" : "false");
+      const total = b.done + b.active + b.todo;
+      const ses = sessionOf(b);
+      const mini = b.packets
+        .map((p) => `<span data-status="${p.status}"></span>`)
+        .join("");
+      btn.innerHTML = `
+        <div class="card-top">
+          <span class="card-name">${escapeHtml(b.title)}</span>
+          <span class="card-pct">${b.pct}<em>%</em></span>
+        </div>
+        <div class="card-bar">
+          <i style="flex-basis:${total ? (b.done/total*100) : 0}%"></i>
+          <i class="a" style="flex-basis:${total ? (b.active/total*100) : 0}%"></i>
+        </div>
+        <div class="mini" style="display:flex;flex-wrap:wrap;gap:2.5px">${mini}</div>
+        <div class="card-meta">
+          <span class="ses" data-s="${ses.state}"><i></i>${escapeHtml(ses.text)}</span>
+          <span>${b.total} 封包 · ${fmtTime(b.updatedAt)}</span>
+        </div>`;
+      btn.addEventListener("click", () => selectBoard(b.id));
+      cardsEl.appendChild(btn);
+    }
+  }
+
+  // ---------- detail（下方詳細） ----------
+
+  function ensureDetailSkeleton() {
+    $("#detail").innerHTML = `
+      <div class="board">
+        <div class="board-head">
+          <button class="ses" type="button" id="live" data-s="idle"><i></i><span id="live-t">—</span></button>
+          <span class="board-title" id="d-title">—</span>
+          <div class="board-stats">
+            <span id="counts">—</span>
+            <span class="board-pct"><span id="pct">0</span><em>%</em></span>
+          </div>
+        </div>
+        <div class="tracks">
+          <div class="track-sum"><i class="d" id="sum-d" style="flex-basis:0%"></i><i class="a" id="sum-a" style="flex-basis:0%"></i></div>
+          <div class="track" id="track"></div>
+        </div>
+        <div class="groups" id="groups"></div>
+        <div class="board-foot">
+          <div class="log" id="log"><span class="log-empty">還沒有活動紀錄</span></div>
+          <div class="hint">點波次那一列可以展開，看每個封包的名稱與細節 · 已完成的項目自動排到最下面 · 底線串起來的是同一件事的多片</div>
+        </div>
+        <div class="board-actions">
+          <button class="ghost" id="btn-archive">封存這個目標</button>
+        </div>
+      </div>`;
+    $("#btn-archive").addEventListener("click", archiveCurrentBoard);
+    $("#live").addEventListener("click", toggleSession);
+
+    // 委派一次就好：滑過方塊點它自己那一段，滑過波次點整段
+    const groupsEl = $("#groups");
+    groupsEl.addEventListener("mouseover", (e) => {
+      const pk = e.target.closest(".pk");
+      if (pk) return highlightTrack(new Set([pk.dataset.id]));
+      const prow = e.target.closest(".prow");
+      if (prow) {
+        const id = prow.querySelector(".pk")?.dataset.id;
+        return highlightTrack(id ? new Set([id]) : null);
+      }
+      const grp = e.target.closest(".grp");
+      if (grp && currentBoard) {
+        const ids = (currentBoard.packets || [])
+          .filter((p) => p.group === grp.dataset.group)
+          .map((p) => p.id);
+        return highlightTrack(new Set(ids));
+      }
+      highlightTrack(null);
+    });
+    groupsEl.addEventListener("mouseleave", () => highlightTrack(null));
+  }
+
+  function legend() {
+    const typeEl = $("#legend"); typeEl.innerHTML = "";
+    for (const [k, v] of Object.entries(TYPES)) {
+      const s = document.createElement("span");
+      s.className = "lg";
+      s.innerHTML = `<i style="background:var(--t-${k})"></i>${v}`;
+      typeEl.appendChild(s);
+    }
+    const stEl = $("#legend-st"); stEl.innerHTML = "";
+    for (const [k, v] of Object.entries(STATUS_LABEL)) {
+      const s = document.createElement("span");
+      s.className = "lg";
+      s.innerHTML = `<span class="pk demo" data-status="${k}"></span>${v}`;
+      stEl.appendChild(s);
+    }
+    const trEl = $("#legend-tr"); trEl.innerHTML = "";
+    for (const [color, label] of TRACK_COLORS) {
+      const s = document.createElement("span");
+      s.className = "lg";
+      s.innerHTML = `<i style="background:var(${color})"></i>${label}`;
+      trEl.appendChild(s);
+    }
+  }
+
+  function liveOf(b) { return (b.packets || []).filter((p) => p.status !== "skipped"); }
+
+  function stats(b) {
+    const l = liveOf(b);
+    const done = l.filter((p) => p.status === "done").length;
+    const act = l.filter((p) => p.status === "active" || p.status === "half").length;
+    const pct = l.length ? Math.round((done / l.length) * 100) : 0;
+    $("#pct").textContent = pct;
+    $("#counts").textContent = `${done} 完成 · ${act} 進行 · ${l.length - done - act} 待辦`;
+    $("#sum-d").style.flexBasis = (l.length ? done / l.length * 100 : 0) + "%";
+    $("#sum-a").style.flexBasis = (l.length ? act / l.length * 100 : 0) + "%";
+  }
+
+  // 進度條：一格一個封包，順序跟畫面上的波次順序一致
+  function renderTrack(ordered) {
+    const t = $("#track");
+    if (!t) return;
+    t.innerHTML = "";
+    for (const p of ordered) {
+      const i = document.createElement("i");
+      i.dataset.status = p.status;
+      i.dataset.id = p.id;
+      i.title = `${p.title}\n${TYPES[p.type] || p.type} · ${STATUS_LABEL[p.status] || p.status}`;
+      t.appendChild(i);
+    }
+  }
+
+  // 滑到波次／方塊時，把它在進度條上對應的段落點亮，其他段落暗下去
+  function highlightTrack(ids) {
+    const t = $("#track");
+    if (!t) return;
+    if (!ids || !ids.size) {
+      t.classList.remove("dim");
+      for (const el of t.children) el.classList.remove("hl");
+      return;
+    }
+    t.classList.add("dim");
+    for (const el of t.children) el.classList.toggle("hl", ids.has(el.dataset.id));
+  }
+
+  function renderSession() {
+    const btn = $("#live");
+    if (!btn || !currentBoard) return;
+    const ses = sessionOf(currentBoard);
+    btn.dataset.s = ses.state;
+    $("#live-t").textContent = ses.label ? `${ses.text} · ${ses.label}` : ses.text;
+    btn.title =
+      (ses.state === "ended"
+        ? "這個對話標記為收工了，點一下改回進行中"
+        : "點一下標記為收工") +
+      `\n最後一次動作：${fmtTime(ses.beatAt)}`;
+  }
+
+  async function toggleSession() {
+    if (!currentBoard) return;
+    const next = sessionOf(currentBoard).state === "ended" ? "live" : "ended";
+    try {
+      await fetch(`/api/session?board=${encodeURIComponent(selectedId)}&state=${next}`);
+    } catch {}
+  }
+
+  function upsertPacket(p, container) {
+    let el = pkEls.get(p.id);
+    const isNew = !el;
+    if (isNew) {
+      el = document.createElement("span");
+      el.className = "pk";
+      el.dataset.id = p.id;
+      pkEls.set(p.id, el);
+    }
+    const prevStatus = el.dataset.status;
+    el.dataset.t = p.type;
+    el.dataset.status = p.status;
+    el.title = `${p.title}\n${TYPES[p.type] || p.type} · ${STATUS_LABEL[p.status] || p.status}${p.frag ? " · 屬於 " + p.frag : ""}`;
+    container.appendChild(el);
+    // 一次性動畫走 Web Animations API，不佔用 CSS 的 animation（那個留給心跳）
+    if (isNew) {
+      el.animate(
+        [{ transform: "scale(0) rotate(-12deg)" }, { transform: "none" }],
+        { duration: 340, easing: "cubic-bezier(.2,.9,.3,1.2)" },
+      );
+    } else if (prevStatus !== undefined && prevStatus !== p.status) {
+      el.animate(
+        [{ transform: "scale(1)" }, { transform: "scale(1.35)", offset: 0.35 }, { transform: "scale(1)" }],
+        { duration: 500, easing: "ease" },
+      );
+    }
+    return el;
+  }
+
+  function inferGroups(b) {
+    const seen = new Set(), out = [];
+    for (const p of b.packets || []) {
+      if (!seen.has(p.group)) { seen.add(p.group); out.push({ id: p.group, label: p.group }); }
+    }
+    return out;
+  }
+
+  function renderBoard(b) {
+    currentBoard = b;
+    $("#d-title").textContent = b.title || selectedId;
+
+    const groupDefs = (b.groups && b.groups.length) ? b.groups : inferGroups(b);
+    const withPackets = groupDefs
+      .map((g) => ({ g, packets: (b.packets || []).filter((p) => p.group === g.id) }))
+      .filter((x) => x.packets.length);
+
+    // 有事要做的組別留在上面；全部完成或全部暫緩的組別沉到最下面
+    const groupTier = (packets) => packets.length ? Math.min(...packets.map(packetTier)) : 0;
+    const sortedGroups = stableSortByTier(withPackets, (x) => groupTier(x.packets));
+
+    const groupsEl = $("#groups");
+    const seenGroupIds = new Set();
+    const seenPacketIds = new Set();
+    const seenFragKeys = new Set();
+    const ordered = []; // 畫面上實際的封包順序，進度條照這個排
+
+    for (const { g, packets } of sortedGroups) {
+      seenGroupIds.add(g.id);
+      let row = grpRowEls.get(g.id);
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "grp";
+        row.innerHTML =
+          '<div class="grp-head">' +
+            '<div class="grp-label"><b></b><span></span></div>' +
+            '<div class="pks"></div>' +
+          '</div>' +
+          '<div class="grp-rows"></div>';
+        row.querySelector(".grp-head").addEventListener("click", () => toggleGroup(g.id));
+        row.dataset.group = g.id;
+        grpRowEls.set(g.id, row);
+      }
+      const open = expandedGroups.has(g.id);
+      row.classList.toggle("open", open);
+      row.querySelector(".grp-label b").textContent = g.label || g.id;
+      row.querySelector(".grp-label span").textContent =
+        packets.length + " 項" + (open ? "" : "　▸ 點開看細節");
+      const box = row.querySelector(".pks");
+      const rowsBox = row.querySelector(".grp-rows");
+
+      const units = stableSortByTier(
+        buildUnits(packets),
+        (u) => Math.min(...u.members.map(packetTier)),
+      );
+
+      if (open) {
+        // 展開：一個封包一列。方塊是既有節點，會被搬進來而不是重建，FLIP 才有東西可以動
+        rowsBox.innerHTML = "";
+        for (const u of units) {
+          // 同一組的列包在一起，左邊那條直線就是這組的進度
+          let host = rowsBox;
+          if (u.kind === "frag") {
+            const n = u.members.length;
+            const fDone = u.members.filter((p) => p.status === "done").length;
+            const fAct = u.members.filter((p) => p.status === "active" || p.status === "half").length;
+            const block = document.createElement("div");
+            block.className = "frag-block" + (fAct > 0 ? " on" : "");
+            block.innerHTML = '<div class="frag-line"><i class="d"></i><i class="a"></i></div>';
+            block.querySelector(".frag-line .d").style.flexBasis = (fDone / n * 100) + "%";
+            block.querySelector(".frag-line .a").style.flexBasis = (fAct / n * 100) + "%";
+            block.title = `${u.frag}：同一件事的 ${n} 片 · 完成 ${fDone}／${n}`;
+            rowsBox.appendChild(block);
+            host = block;
+          }
+          for (const p of u.members) {
+            seenPacketIds.add(p.id);
+            ordered.push(p);
+            const pr = document.createElement("div");
+            pr.className = "prow";
+            host.appendChild(pr);
+            upsertPacket(p, pr);
+            const bits = [TYPES[p.type] || p.type, STATUS_LABEL[p.status] || p.status];
+            if (p.frag) bits.push("屬於 " + p.frag);
+            const info = document.createElement("div");
+            info.className = "pinfo";
+            info.innerHTML =
+              `<span class="pinfo-title">${escapeHtml(p.title)}</span>` +
+              `<span class="pinfo-meta">${escapeHtml(bits.join(" · "))}</span>` +
+              (p.detail ? `<span class="pinfo-detail">${escapeHtml(p.detail)}</span>` : "");
+            pr.appendChild(info);
+          }
+        }
+        groupsEl.appendChild(row);
+        continue;
+      }
+
+      rowsBox.innerHTML = ""; // 收合了就把細節列清掉，不要留一堆隱藏的死節點
+      for (const u of units) {
+        u.members.forEach((p) => { seenPacketIds.add(p.id); ordered.push(p); });
+        if (u.kind === "frag") {
+          // 用 group+frag 名複合鍵重用同一個包裝 div，否則每次重繪都會留下一個空殼
+          const fragKey = g.id + "::" + u.frag;
+          seenFragKeys.add(fragKey);
+          let fg = fragEls.get(fragKey);
+          if (!fg) {
+            fg = document.createElement("div");
+            fg.className = "frag";
+            fg.innerHTML =
+              '<div class="frag-pks"></div>' +
+              '<div class="frag-bar"><i class="d"></i><i class="a"></i></div>' +
+              '<span class="frag-tag"></span>';
+            fragEls.set(fragKey, fg);
+          }
+          const n = u.members.length;
+          const fDone = u.members.filter((p) => p.status === "done").length;
+          const fAct = u.members.filter((p) => p.status === "active" || p.status === "half").length;
+          fg.classList.toggle("on", fAct > 0);
+          fg.querySelector(".frag-bar .d").style.flexBasis = (fDone / n * 100) + "%";
+          fg.querySelector(".frag-bar .a").style.flexBasis = (fAct / n * 100) + "%";
+          fg.querySelector(".frag-tag").textContent = `${u.frag} ${fDone}/${n}`;
+          fg.title = `${u.frag}：同一件事的 ${n} 片 · 完成 ${fDone}／${n}`;
+          const pksBox = fg.querySelector(".frag-pks");
+          u.members.forEach((p) => upsertPacket(p, pksBox));
+          box.appendChild(fg); // 已存在的節點會被移動，不是重建
+        } else {
+          upsertPacket(u.members[0], box);
+        }
+      }
+      groupsEl.appendChild(row); // 已存在的節點會被移動到新位置，不是重建
+    }
+
+    for (const [id, el] of grpRowEls) {
+      if (!seenGroupIds.has(id)) { el.remove(); grpRowEls.delete(id); }
+    }
+    for (const [id, el] of pkEls) {
+      if (!seenPacketIds.has(id)) { el.remove(); pkEls.delete(id); }
+    }
+    for (const [key, el] of fragEls) {
+      if (!seenFragKeys.has(key)) { el.remove(); fragEls.delete(key); }
+    }
+    if (!(b.packets || []).length) {
+      groupsEl.innerHTML = '<div class="log-empty" style="padding:16px 0">這個目標還沒有任何封包。</div>';
+    }
+    renderTrack(ordered);
+    stats(b);
+    renderSession();
+    renderLog();
+  }
+
+  function renderLog() {
+    const logEl = $("#log");
+    const lines = logsByBoard.get(selectedId) || [];
+    if (!lines.length) { logEl.innerHTML = '<span class="log-empty">還沒有活動紀錄</span>'; return; }
+    logEl.innerHTML = lines
+      .map((l) => `<div class="log-line"><span class="ts">${l.ts}</span><span style="color:var(--t-${l.type})">${escapeHtml(l.text)}</span></div>`)
+      .join("");
+  }
+
+  function appendLog(boardId, text, type) {
+    const t = new Date();
+    const p2 = (n) => String(n).padStart(2, "0");
+    const ts = `${p2(t.getHours())}:${p2(t.getMinutes())}:${p2(t.getSeconds())}`;
+    const arr = logsByBoard.get(boardId) || [];
+    arr.unshift({ ts, text, type });
+    while (arr.length > LOG_CAP) arr.pop();
+    logsByBoard.set(boardId, arr);
+    if (boardId === selectedId) renderLog();
+  }
+
+  async function loadDetail() {
+    if (!selectedId) { $("#detail").innerHTML = ""; return; }
+    ensureDetailSkeleton();
+    const res = await fetch("/api/board/" + encodeURIComponent(selectedId));
+    if (!res.ok) {
+      $("#detail").innerHTML = `<div class="empty">找不到目標「${escapeHtml(selectedId)}」，可能已被封存。</div>`;
+      return;
+    }
+    renderBoard(await res.json());
+  }
+
+  // 展開／收合一個波次。方塊用 FLIP 從舊位置滑到新位置，
+  // 細節的淡入延遲交給 CSS（.pinfo 的 animation-delay），所以這裡只管位移
+  function toggleGroup(gid) {
+    if (!currentBoard) return;
+
+    const before = new Map();
+    for (const [id, el] of pkEls) {
+      if (el.isConnected) before.set(id, el.getBoundingClientRect());
+    }
+
+    if (expandedGroups.has(gid)) expandedGroups.delete(gid);
+    else expandedGroups.add(gid);
+    renderBoard(currentBoard);
+
+    // Invert：先把每個方塊擺回它原本的位置
+    const moving = [];
+    for (const [id, el] of pkEls) {
+      const a = before.get(id);
+      if (!a || !el.isConnected) continue;
+      const b = el.getBoundingClientRect();
+      const dx = a.left - b.left, dy = a.top - b.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+      el.style.transition = "none";
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
+      moving.push(el);
+    }
+    if (!moving.length) return;
+
+    // 強制一次 reflow，讓上面的位移成為動畫起點。
+    // 不用 requestAnimationFrame——分頁在背景時 rAF 不會執行，
+    // 方塊會卡在偏移位置回不去
+    void moving[0].offsetWidth;
+
+    // Play：放手，讓它們滑到新位置
+    for (const el of moving) {
+      el.style.transition = "transform .42s cubic-bezier(.22,.75,.2,1)";
+      el.style.transform = "";
+    }
+    // 動畫收尾後把 inline transition 收掉；連點時只有最後一次的清理算數
+    const token = ++flipToken;
+    setTimeout(() => {
+      if (token !== flipToken) return;
+      for (const el of moving) el.style.transition = "";
+    }, 460);
+  }
+
+  async function archiveCurrentBoard() {
+    if (!currentBoard) return;
+    if (!confirm(`確定要封存「${currentBoard.title}」嗎？`)) return;
+    await fetch("/api/board/" + encodeURIComponent(selectedId), { method: "DELETE" });
+    selectBoard(null);
+  }
+
+  // ---------- 選取／路由 ----------
+
+  function boardIdFromPath() {
+    const m = location.pathname.match(/^\/b\/([^/]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  function selectBoard(id, { push = true } = {}) {
+    selectedId = id;
+    if (push) history.pushState(null, "", id ? "/b/" + encodeURIComponent(id) : "/");
+    pkEls.clear();
+    grpRowEls.clear();
+    fragEls.clear();
+    expandedGroups.clear();
+    renderCards();
+    loadDetail();
+  }
+
+  window.addEventListener("popstate", () => {
+    selectedId = boardIdFromPath();
+    pkEls.clear(); grpRowEls.clear(); fragEls.clear(); expandedGroups.clear();
+    renderCards(); loadDetail();
+  });
+
+  // ---------- 即時連線 ----------
+
+  function setConn(on) {
+    for (const el of document.querySelectorAll(".conn")) el.classList.toggle("on", on);
+    const t = $("#connText"); if (t) t.textContent = on ? "即時連線中" : "連線中斷，重試中…";
+  }
+
+  let boardsRefreshTimer = null;
+  function scheduleBoardsRefresh() {
+    clearTimeout(boardsRefreshTimer);
+    boardsRefreshTimer = setTimeout(async () => {
+      try { boardsSummary = await fetchBoards(); renderCards(); } catch {}
+    }, 120);
+  }
+
+  let detailRefreshTimer = null;
+  function scheduleDetailRefresh() {
+    clearTimeout(detailRefreshTimer);
+    detailRefreshTimer = setTimeout(loadDetail, 100);
+  }
+
+  const es = new EventSource("/events");
+  es.addEventListener("open", () => setConn(true));
+  es.addEventListener("error", () => setConn(false));
+  es.addEventListener("packet-set", (e) => {
+    const d = JSON.parse(e.data);
+    appendLog(d.board, `${d.packet.title} → ${STATUS_LABEL[d.packet.status] || d.packet.status}`, d.packet.type);
+    scheduleBoardsRefresh();
+    if (d.board === selectedId) scheduleDetailRefresh();
+  });
+  es.addEventListener("packet-added", (e) => {
+    const d = JSON.parse(e.data);
+    appendLog(d.board, `新增：${d.packet.title}`, d.packet.type);
+    scheduleBoardsRefresh();
+    if (d.board === selectedId) scheduleDetailRefresh();
+  });
+  es.addEventListener("board-replaced", (e) => {
+    const d = JSON.parse(e.data);
+    scheduleBoardsRefresh();
+    if (d.board === selectedId) scheduleDetailRefresh();
+  });
+  es.addEventListener("board-removed", (e) => {
+    const d = JSON.parse(e.data);
+    scheduleBoardsRefresh();
+    if (d.board === selectedId) selectBoard(null, { push: false });
+  });
+  es.addEventListener("session-set", (e) => {
+    const d = JSON.parse(e.data);
+    scheduleBoardsRefresh();
+    if (d.board === selectedId && currentBoard) {
+      currentBoard.session = d.session;
+      renderSession();
+    }
+  });
+  es.addEventListener("archive-changed", () => { refreshArchive(); });
+
+  // ---------- modals ----------
+
+  let lastFocused = null;
+  function openModal(id) {
+    lastFocused = document.activeElement;
+    const m = $("#" + id);
+    m.classList.add("open");
+    m.querySelector("input,select")?.focus();
+  }
+  function closeModal(id) {
+    $("#" + id).classList.remove("open");
+    lastFocused?.focus();
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    for (const m of document.querySelectorAll(".modal-backdrop.open")) closeModal(m.id);
+  });
+  for (const btn of document.querySelectorAll("[data-close]")) {
+    btn.addEventListener("click", () => closeModal(btn.dataset.close));
+  }
+  for (const backdrop of document.querySelectorAll(".modal-backdrop")) {
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeModal(backdrop.id); });
+  }
+
+  // ---------- 封存區 ----------
+
+  let archived = [];
+  let armedId = null; // 已按過一次刪除、等第二下確認的目標
+
+  function renderArchiveCount() {
+    $("#btn-open-archive").textContent = archived.length ? `封存 · ${archived.length}` : "封存";
+  }
+
+  function renderArchiveList() {
+    const el = $("#ma-list");
+    if (!archived.length) {
+      el.innerHTML = '<div class="log-empty" style="padding:10px 2px">封存區是空的。</div>';
+      return;
+    }
+    el.innerHTML = "";
+    for (const b of archived) {
+      const armed = armedId === b.id;
+      const row = document.createElement("div");
+      row.className = "arc-row" + (armed ? " armed" : "");
+      row.innerHTML = `
+        <div class="arc-main">
+          <span class="arc-name">${escapeHtml(b.title)}</span>
+          <span class="arc-meta">${
+            armed
+              ? "檔案會直接刪掉，救不回來"
+              : `${escapeHtml(b.id)} · ${b.pct}% · ${b.total} 封包 · ${fmtTime(b.updatedAt)}`
+          }</span>
+        </div>
+        <div class="arc-btns">
+          ${armed ? '<button class="tiny" data-act="cancel">取消</button>' : '<button class="tiny" data-act="restore">還原</button>'}
+          <button class="tiny del" data-act="delete">${armed ? "確定刪除" : "刪除"}</button>
+        </div>`;
+      row.querySelector('[data-act="restore"]')?.addEventListener("click", () => restoreArchived(b.id));
+      row.querySelector('[data-act="cancel"]')?.addEventListener("click", () => {
+        armedId = null; renderArchiveList();
+      });
+      row.querySelector('[data-act="delete"]').addEventListener("click", () => {
+        // 不可逆的操作按一下不算，第二下才真的送出
+        if (armedId !== b.id) { armedId = b.id; renderArchiveList(); return; }
+        deleteArchived(b.id);
+      });
+      el.appendChild(row);
+    }
+  }
+
+  async function refreshArchive() {
+    try {
+      const res = await fetch("/api/archive");
+      archived = res.ok ? await res.json() : [];
+    } catch { archived = []; }
+    if (!archived.some((b) => b.id === armedId)) armedId = null;
+    renderArchiveCount();
+    if ($("#modal-archive").classList.contains("open")) renderArchiveList();
+  }
+
+  async function restoreArchived(id) {
+    $("#ma-err").textContent = "";
+    try {
+      const res = await fetch(`/api/archive/${encodeURIComponent(id)}/restore`, { method: "POST" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "還原失敗");
+      armedId = null;
+      await refreshArchive();
+      boardsSummary = await fetchBoards().catch(() => boardsSummary);
+      closeModal("modal-archive");
+      selectBoard(id);
+    } catch (e) { $("#ma-err").textContent = e.message; }
+  }
+
+  async function deleteArchived(id) {
+    $("#ma-err").textContent = "";
+    try {
+      const res = await fetch("/api/archive/" + encodeURIComponent(id), { method: "DELETE" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "刪除失敗");
+      armedId = null;
+      await refreshArchive();
+    } catch (e) { $("#ma-err").textContent = e.message; }
+  }
+
+  $("#btn-open-archive").addEventListener("click", async () => {
+    $("#ma-err").textContent = "";
+    armedId = null;
+    await refreshArchive();
+    renderArchiveList();
+    openModal("modal-archive");
+  });
+
+  // ---------- 右側圖解欄的收合 ----------
+
+  const RAIL_KEY = "board.rail.open";
+
+  function applyRail(open) {
+    $("#layout").classList.toggle("rail-off", !open);
+    const btn = $("#rail-toggle");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.title = open ? "收起圖解" : "展開圖解";
+  }
+
+  function initRail() {
+    let open = true; // 預設打開，之後照使用者上次的選擇
+    try {
+      const saved = localStorage.getItem(RAIL_KEY);
+      if (saved !== null) open = saved === "1";
+    } catch {}
+    applyRail(open);
+    $("#rail-toggle").addEventListener("click", () => {
+      const next = $("#layout").classList.contains("rail-off"); // 收起中→要展開
+      applyRail(next);
+      try { localStorage.setItem(RAIL_KEY, next ? "1" : "0"); } catch {}
+    });
+  }
+
+  // ---------- 開機 ----------
+
+  // 「閒置 N 分」要自己往前走，live 過了門檻也要自動翻成閒置
+  setInterval(() => { renderCards(); renderSession(); }, 30000);
+
+  legend();   // 圖解在 #detail 之外，重繪 board 不會動到它，開機畫一次就夠
+  initRail();
+
+  (async () => {
+    boardsSummary = await fetchBoards().catch(() => []);
+    selectedId = boardIdFromPath() || boardsSummary[0]?.id || null;
+    renderCards();
+    loadDetail();
+    refreshArchive();
+  })();
+})();
+</script>
+</body>
+</html>
