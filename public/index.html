@@ -131,14 +131,8 @@
   .board-stats { margin-left:auto; display:flex; align-items:center; gap:14px; font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--ink-soft); }
   .board-pct { font-family:"IBM Plex Mono",monospace; font-size:22px; font-weight:700; color:var(--accent); letter-spacing:-.02em; line-height:1; }
   .board-pct em { font-size:12.5px; font-style:normal; color:var(--ink-faint); }
-  /* 兩條疊在一起：上面細的看整體完成度（完成的聚在左邊），
-     下面一格一個封包、順序跟波次一致，所以任何波次／方塊都能對到自己那一段 */
-  .tracks { display:flex; flex-direction:column; gap:2px; background:var(--sunken); padding:2px 0 0; }
-  .track-sum { height:3px; display:flex; overflow:hidden; }
-  .track-sum i { height:100%; display:block; transition:flex-basis .5s ease; }
-  .track-sum i.d { background:var(--ok); }
-  .track-sum i.a { background:var(--warn); }
-  .track { height:7px; display:flex; }
+  /* 一格一個封包，順序跟波次一致，所以任何波次／方塊都能對到自己那一段 */
+  .track { height:7px; display:flex; background:var(--sunken); }
   .track i {
     flex:1 1 0; min-width:2px; height:100%; display:block; background:var(--line-strong);
     transition:background .3s ease, opacity .18s ease, transform .18s ease;
@@ -265,7 +259,6 @@
     width:13px; height:13px; border-width:1.25px; cursor:default; pointer-events:none;
     --t:var(--ink-soft); flex-shrink:0;
   }
-  .hint { font-size:11px; color:var(--ink-faint); flex-basis:100%; }
 
   .log { flex:1 1 260px; min-width:240px; max-height:120px; overflow-y:auto; display:flex; flex-direction:column-reverse; gap:3px; }
   .log-line { font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-soft); display:flex; gap:8px; animation:slidein .25s ease backwards; }
@@ -551,14 +544,10 @@
             <span class="board-pct"><span id="pct">0</span><em>%</em></span>
           </div>
         </div>
-        <div class="tracks">
-          <div class="track-sum"><i class="d" id="sum-d" style="flex-basis:0%"></i><i class="a" id="sum-a" style="flex-basis:0%"></i></div>
-          <div class="track" id="track"></div>
-        </div>
+        <div class="track" id="track"></div>
         <div class="groups" id="groups"></div>
         <div class="board-foot">
           <div class="log" id="log"><span class="log-empty">還沒有活動紀錄</span></div>
-          <div class="hint">點波次那一列可以展開，看每個封包的名稱與細節 · 已完成的項目自動排到最下面 · 底線串起來的是同一件事的多片</div>
         </div>
         <div class="board-actions">
           <button class="ghost" id="btn-archive">封存這個目標</button>
@@ -622,8 +611,6 @@
     const pct = l.length ? Math.round((done / l.length) * 100) : 0;
     $("#pct").textContent = pct;
     $("#counts").textContent = `${done} 完成 · ${act} 進行 · ${l.length - done - act} 待辦`;
-    $("#sum-d").style.flexBasis = (l.length ? done / l.length * 100 : 0) + "%";
-    $("#sum-a").style.flexBasis = (l.length ? act / l.length * 100 : 0) + "%";
   }
 
   // 進度條：一格一個封包，順序跟畫面上的波次順序一致

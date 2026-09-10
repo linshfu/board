@@ -49,6 +49,59 @@ function httpError(status, message) {
   return err;
 }
 
+// Windows 繁中的 shell（cmd、非 UTF-8 的 PowerShell 主機）會把中文以 Big5 送出，
+// 硬用 UTF-8 解就變成一串 U+FFFD 且救不回來——所以先驗 UTF-8，不合法才退回 Big5。
+// 這是自動的，呼叫端不用做任何事、也不用記得指定編碼
+function decodeText(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    try {
+      return new TextDecoder("big5").decode(bytes);
+    } catch {
+      return bytes.toString("utf8");
+    }
+  }
+}
+
+// new URL() 會在解析階段就把非 UTF-8 的 %XX 序列吃成 U+FFFD，
+// 位元組拿不回來，所以 query 自己從 raw url 解一次
+function percentToText(s) {
+  const bytes = [];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "%") {
+      const hex = s.slice(i + 1, i + 3);
+      if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+        bytes.push(parseInt(hex, 16));
+        i += 2;
+        continue;
+      }
+    }
+    if (c === "+") {
+      bytes.push(0x20);
+      continue;
+    }
+    bytes.push(s.charCodeAt(i) & 0xff); // req.url 是 latin1 語意
+  }
+  return decodeText(Buffer.from(bytes));
+}
+
+function queryOf(rawUrl) {
+  const at = rawUrl.indexOf("?");
+  const out = new Map();
+  if (at === -1) return out;
+  for (const pair of rawUrl.slice(at + 1).split("&")) {
+    if (!pair) continue;
+    const eq = pair.indexOf("=");
+    const k = eq === -1 ? pair : pair.slice(0, eq);
+    const v = eq === -1 ? "" : pair.slice(eq + 1);
+    const key = percentToText(k);
+    if (!out.has(key)) out.set(key, percentToText(v));
+  }
+  return out;
+}
+
 function safeId(id) {
   if (typeof id !== "string" || !/^[a-zA-Z0-9_-]+$/.test(id)) {
     throw httpError(400, `board id 格式不對：${id}`);
@@ -234,7 +287,7 @@ function readJsonBody(req) {
       try {
         resolve(
           chunks.length
-            ? JSON.parse(Buffer.concat(chunks).toString("utf8"))
+            ? JSON.parse(decodeText(Buffer.concat(chunks)))
             : {},
         );
       } catch {
@@ -262,10 +315,10 @@ async function apiListBoards() {
   return boards;
 }
 
-async function apiSet(url, res) {
-  const board = url.searchParams.get("board");
-  const id = url.searchParams.get("id");
-  const status = url.searchParams.get("status");
+async function apiSet(q, res) {
+  const board = q.get("board");
+  const id = q.get("id");
+  const status = q.get("status");
   if (!board || !id || !status) {
     throw httpError(400, "board、id、status 為必填");
   }
@@ -278,7 +331,7 @@ async function apiSet(url, res) {
     const p = (data.packets || []).find((x) => x.id === id);
     if (!p) throw httpError(404, `board「${board}」裡找不到封包「${id}」`);
     p.status = status;
-    const detail = url.searchParams.get("detail");
+    const detail = q.has("detail") ? q.get("detail") : null;
     if (detail !== null) p.detail = detail;
     touchSession(data);
     data.updatedAt = new Date().toISOString();
@@ -290,25 +343,25 @@ async function apiSet(url, res) {
   json(res, { ok: true, packet });
 }
 
-async function apiAdd(url, res) {
-  const board = url.searchParams.get("board");
-  const id = url.searchParams.get("id");
-  const type = url.searchParams.get("type");
-  const title = url.searchParams.get("title");
-  const group = url.searchParams.get("group");
+async function apiAdd(q, res) {
+  const board = q.get("board");
+  const id = q.get("id");
+  const type = q.get("type");
+  const title = q.get("title");
+  const group = q.get("group");
   if (!board || !id || !type || !title || !group) {
     throw httpError(400, "board、id、type、title、group 為必填");
   }
   if (!TYPES.has(type)) {
     throw httpError(400, `type 必須是：${[...TYPES].join(" / ")}`);
   }
-  const status = url.searchParams.get("status") || "todo";
+  const status = q.get("status") || "todo";
   if (!STATUSES.has(status)) {
     throw httpError(400, `status 必須是：${[...STATUSES].join(" / ")}`);
   }
-  const groupLabel = url.searchParams.get("groupLabel");
-  const frag = url.searchParams.get("frag") || undefined;
-  const detail = url.searchParams.get("detail") || undefined;
+  const groupLabel = q.get("groupLabel");
+  const frag = q.get("frag") || undefined;
+  const detail = q.get("detail") || undefined;
 
   const packet = await withLock(board, async () => {
     const data = await readBoard(board);
@@ -353,14 +406,14 @@ async function apiPutBoard(req, res, id) {
 }
 
 // 對話狀態：AI 每回合打一次當心跳，收工時帶 state=ended
-async function apiSession(url, res) {
-  const board = url.searchParams.get("board");
+async function apiSession(q, res) {
+  const board = q.get("board");
   if (!board) throw httpError(400, "board 為必填");
-  const state = url.searchParams.get("state") || "live";
+  const state = q.get("state") || "live";
   if (!SESSION_STATES.has(state)) {
     throw httpError(400, `state 必須是：${[...SESSION_STATES].join(" / ")}`);
   }
-  const label = url.searchParams.get("label");
+  const label = q.has("label") ? q.get("label") : null;
 
   const session = await withLock(board, async () => {
     const data = await readBoard(board);
@@ -466,13 +519,13 @@ const server = createServer(async (req, res) => {
       return json(res, await apiListBoards());
     }
     if (req.method === "GET" && pathname === "/api/set") {
-      return await apiSet(url, res);
+      return await apiSet(queryOf(req.url), res);
     }
     if (req.method === "GET" && pathname === "/api/add") {
-      return await apiAdd(url, res);
+      return await apiAdd(queryOf(req.url), res);
     }
     if (req.method === "GET" && pathname === "/api/session") {
-      return await apiSession(url, res);
+      return await apiSession(queryOf(req.url), res);
     }
     if (req.method === "GET" && pathname === "/api/archive") {
       return json(res, await apiListArchive());
